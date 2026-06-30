@@ -41,6 +41,7 @@ def _layer(*validation_values):
 
 # ------------------------------------------------------------------ filtering
 
+
 def test_no_filter_returns_all_features():
     layer = _layer("true", "false", None)
     ids = get_feature_ids(layer, {KEY_UNVALIDATED_FILTER: ""})
@@ -73,6 +74,7 @@ def test_all_validated_filter_returns_none():
 
 # ------------------------------------------------------------------ sort order
 
+
 def _set_sort(layer, expression, ascending=True):
     config = QgsAttributeTableConfig()
     config.setSortExpression(expression)
@@ -100,6 +102,7 @@ def test_sort_descending():
 
 
 # ------------------------------------------------------------------ write_validation
+
 
 def test_write_validation_sets_field_value():
     layer = _layer(None)
@@ -142,6 +145,7 @@ def test_write_validation_unknown_field_raises():
 
 # ------------------------------------------------------------------ current_feature
 
+
 def test_current_feature_returns_first_feature():
     layer = _layer("a", "b", "c")
     fids = [f.id() for f in layer.getFeatures()]
@@ -158,6 +162,7 @@ def test_current_feature_updates_after_navigate():
 
 
 # ------------------------------------------------------------------ validation_counts
+
 
 def test_validation_counts_all_null():
     layer = _layer(None, None, None)

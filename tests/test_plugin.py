@@ -100,6 +100,7 @@ def started_plugin(plugin_with_layer):
 
 # ------------------------------------------------------------------ smoke
 
+
 def test_initgui_and_unload_do_not_crash(qgis_iface):
     from check_a_kea import classFactory
 
@@ -115,6 +116,7 @@ def test_show_dock_creates_dock(qgis_iface):
 
 
 # ------------------------------------------------------------------ start_validation
+
 
 def test_start_validation_no_layer_shows_error(qgis_iface):
     for lid in list(QgsProject.instance().mapLayers().keys()):
@@ -157,6 +159,7 @@ def test_start_validation_no_filter_includes_all(plugin_with_layer):
 
 # ------------------------------------------------------------------ footer / navigation
 
+
 def test_footer_shows_current_feature_number(started_plugin):
     plugin, _ = started_plugin
     assert "Feature 1 of 2" in plugin.footer_label.text()
@@ -184,6 +187,7 @@ def test_next_past_end_finishes_queue(started_plugin):
 
 # ------------------------------------------------------------------ apply_validation
 
+
 def test_apply_validation_writes_value(started_plugin):
     plugin, layer = started_plugin
     fid = plugin.session.current_fid
@@ -206,6 +210,7 @@ def test_apply_validation_sets_waiting_flag(started_plugin):
 
 
 # ------------------------------------------------------------------ comment
+
 
 def test_comment_save_writes_to_layer(started_plugin):
     plugin, layer = started_plugin

@@ -29,3 +29,23 @@ def test_html_characters_are_escaped():
     assert "<b>" not in html
     assert "<script>" not in html
     assert "&lt;b&gt;" in html
+
+
+def test_null_value_displays_null_symbol():
+    html = kbd_table([("1", None)])
+    assert "NULL" in html
+
+
+def test_null_value_active_when_null_active():
+    html = kbd_table([("1", None)], null_active=True)
+    assert "color: black" in html
+
+
+def test_null_value_inactive_when_not_null_active():
+    html = kbd_table([("1", None)], null_active=False)
+    assert "color: black" not in html
+
+
+def test_null_active_does_not_highlight_non_null_shortcuts():
+    html = kbd_table([("1", "accept"), ("2", None)], null_active=True)
+    assert html.count("color: black") == 1

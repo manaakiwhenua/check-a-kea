@@ -10,32 +10,52 @@ from qgis.PyQt.QtWidgets import (
     QAbstractItemView,
     QTableWidgetItem,
 )
-from qgis.PyQt.QtGui import QIcon, QKeySequence, QMouseEvent
-from qgis.PyQt.QtCore import Qt, QTimer, QEvent, QPoint, QCoreApplication
+from qgis.PyQt.QtGui import QBrush, QColor, QFont, QFontDatabase, QIcon, QKeySequence, QMouseEvent
+from qgis.PyQt.QtCore import Qt, QSettings, QTimer, QEvent, QPoint, QCoreApplication
 
 import sip  # type: ignore  # QGIS runtime dependency, not resolvable by static analysers
 
 from qgis.core import QgsProject, NULL as QGIS_NULL
-from qgis.gui import QgsHighlight, QgsAttributeTableFilterModel
+from qgis.gui import QgsHighlight, QgsAttributeTableFilterModel, QgsAttributeTableModel
 
+from .core.shortcuts import normalise_key as _normalise_key
 from .core.constants import (
-    KEY_VALIDATION_FIELD,
-    KEY_COMMENT_FIELD,
-    KEY_ZOOM_BUFFER,
+    DEFAULT_AUTO_ADVANCE,
+    DEFAULT_AUTO_ADVANCE_DELAY,
+    DEFAULT_AUTO_IDENTIFY,
+    DEFAULT_COMMENT_FIELD,
+    DEFAULT_FLASH_CHANGES,
+    DEFAULT_FLASH_CHANGES_DELAY,
+    DEFAULT_DISPLAY_FIELDS,
+    DEFAULT_LAYER_ID,
+    DEFAULT_SHORTCUTS,
+    DEFAULT_UNVALIDATED_FILTER,
+    DEFAULT_VALIDATION_FIELD,
+    DEFAULT_ZOOM_BUFFER,
     KEY_AUTO_ADVANCE,
     KEY_AUTO_ADVANCE_DELAY,
+    KEY_AUTO_IDENTIFY,
+    KEY_COMMENT_FIELD,
+    KEY_FLASH_CHANGES,
+    KEY_FLASH_CHANGES_DELAY,
+    KEY_DISPLAY_FIELDS,
+    KEY_LAYER_ID,
     KEY_SHORTCUTS,
+    KEY_UNVALIDATED_FILTER,
+    KEY_VALIDATION_FIELD,
+    KEY_ZOOM_BUFFER,
+    QGSPROJECT_SCOPE,
+    QSETTINGS_GROUP,
 )
 from .core.dock import DockMixin
-from .core.layer_utils import get_feature_ids, populate_layer_combo
+from .core.layer_utils import get_feature_ids
 from .core.rendering import kbd_table
 from .core.session import ValidationSession
 from .core.utils import tr
-from .core.widgets import JsonConfigDialog
+from .core.widgets import ConfigDialog
 
 
 class CheckAKea(DockMixin):
-
     def __init__(self, iface):
         self.iface = iface
         self.canvas = iface.mapCanvas()
@@ -43,18 +63,14 @@ class CheckAKea(DockMixin):
         self.action = None
         self.dock = None
 
-        self.layer_combo = None
-        self.field_checklist = None
         self.attribute_table = None
-        self.checked_fields = set()
         self.status_label = None
         self.footer_label = None
-        self.auto_identify_button = None
+        self.comment_section_widget = None
 
         self.validation_controls_widget = None
         self.comment_box = None
         self._comment_save_timer = None
-        self.auto_identify = False
 
         self.session = None
         self._programmatic_selection = False
@@ -64,9 +80,10 @@ class CheckAKea(DockMixin):
         self.highlight = None
         self.shortcuts = []
         self._focus_guard = None
+        self._last_feature_values = {}
+        self._flash_generation = 0
 
         self.plugin_dir = Path(__file__).parent
-        self.config_path = self.plugin_dir / "config.json"
         self.config = self.load_config()
 
         self._translator = None
@@ -75,15 +92,90 @@ class CheckAKea(DockMixin):
     # ------------------------------------------------------------------ config
 
     def load_config(self):
-        with open(self.config_path, "r", encoding="utf-8") as f:
-            config = json.load(f)
-        if KEY_COMMENT_FIELD not in config:
-            config[KEY_COMMENT_FIELD] = "comment"
-        return config
+        project = QgsProject.instance()
+        settings = QSettings()
+        g = QGSPROJECT_SCOPE
+        qs = QSETTINGS_GROUP
+
+        shortcuts_json, _ = project.readEntry(g, KEY_SHORTCUTS, "")
+        try:
+            shortcuts = (
+                json.loads(shortcuts_json) if shortcuts_json else DEFAULT_SHORTCUTS
+            )
+        except (json.JSONDecodeError, ValueError):
+            shortcuts = DEFAULT_SHORTCUTS
+
+        return {
+            KEY_LAYER_ID: project.readEntry(g, KEY_LAYER_ID, DEFAULT_LAYER_ID)[0],
+            KEY_VALIDATION_FIELD: project.readEntry(
+                g, KEY_VALIDATION_FIELD, DEFAULT_VALIDATION_FIELD
+            )[0],
+            KEY_COMMENT_FIELD: project.readEntry(
+                g, KEY_COMMENT_FIELD, DEFAULT_COMMENT_FIELD
+            )[0],
+            KEY_UNVALIDATED_FILTER: project.readEntry(
+                g, KEY_UNVALIDATED_FILTER, DEFAULT_UNVALIDATED_FILTER
+            )[0],
+            KEY_SHORTCUTS: shortcuts,
+            KEY_DISPLAY_FIELDS: json.loads(
+                project.readEntry(g, KEY_DISPLAY_FIELDS, "[]")[0] or "[]"
+            ),
+            KEY_ZOOM_BUFFER: settings.value(
+                f"{qs}/{KEY_ZOOM_BUFFER}", DEFAULT_ZOOM_BUFFER, type=int
+            ),
+            KEY_AUTO_ADVANCE: settings.value(
+                f"{qs}/{KEY_AUTO_ADVANCE}", DEFAULT_AUTO_ADVANCE, type=bool
+            ),
+            KEY_AUTO_ADVANCE_DELAY: settings.value(
+                f"{qs}/{KEY_AUTO_ADVANCE_DELAY}", DEFAULT_AUTO_ADVANCE_DELAY, type=int
+            ),
+            KEY_AUTO_IDENTIFY: settings.value(
+                f"{qs}/{KEY_AUTO_IDENTIFY}", DEFAULT_AUTO_IDENTIFY, type=bool
+            ),
+            KEY_FLASH_CHANGES: settings.value(
+                f"{qs}/{KEY_FLASH_CHANGES}", DEFAULT_FLASH_CHANGES, type=bool
+            ),
+            KEY_FLASH_CHANGES_DELAY: settings.value(
+                f"{qs}/{KEY_FLASH_CHANGES_DELAY}", DEFAULT_FLASH_CHANGES_DELAY, type=int
+            ),
+        }
 
     def save_config(self):
-        with open(self.config_path, "w", encoding="utf-8") as f:
-            json.dump(self.config, f, indent=2)
+        project = QgsProject.instance()
+        settings = QSettings()
+        g = QGSPROJECT_SCOPE
+        qs = QSETTINGS_GROUP
+
+        project.writeEntry(g, KEY_LAYER_ID, self.config[KEY_LAYER_ID])
+        project.writeEntry(g, KEY_VALIDATION_FIELD, self.config[KEY_VALIDATION_FIELD])
+        project.writeEntry(g, KEY_COMMENT_FIELD, self.config[KEY_COMMENT_FIELD])
+        project.writeEntry(
+            g, KEY_UNVALIDATED_FILTER, self.config[KEY_UNVALIDATED_FILTER]
+        )
+        project.writeEntry(g, KEY_SHORTCUTS, json.dumps(self.config[KEY_SHORTCUTS]))
+        project.writeEntry(
+            g,
+            KEY_DISPLAY_FIELDS,
+            json.dumps(self.config.get(KEY_DISPLAY_FIELDS, DEFAULT_DISPLAY_FIELDS)),
+        )
+
+        settings.setValue(f"{qs}/{KEY_ZOOM_BUFFER}", self.config[KEY_ZOOM_BUFFER])
+        settings.setValue(f"{qs}/{KEY_AUTO_ADVANCE}", self.config[KEY_AUTO_ADVANCE])
+        settings.setValue(
+            f"{qs}/{KEY_AUTO_ADVANCE_DELAY}", self.config[KEY_AUTO_ADVANCE_DELAY]
+        )
+        settings.setValue(
+            f"{qs}/{KEY_AUTO_IDENTIFY}",
+            self.config.get(KEY_AUTO_IDENTIFY, DEFAULT_AUTO_IDENTIFY),
+        )
+        settings.setValue(
+            f"{qs}/{KEY_FLASH_CHANGES}",
+            self.config.get(KEY_FLASH_CHANGES, DEFAULT_FLASH_CHANGES),
+        )
+        settings.setValue(
+            f"{qs}/{KEY_FLASH_CHANGES_DELAY}",
+            self.config.get(KEY_FLASH_CHANGES_DELAY, DEFAULT_FLASH_CHANGES_DELAY),
+        )
 
     def _load_translator(self):
         from qgis.PyQt.QtCore import QTranslator, QSettings
@@ -109,7 +201,12 @@ class CheckAKea(DockMixin):
         self.iface.addPluginToMenu("&Check-a-Kea", self.action)
         self.iface.addToolBarIcon(self.action)
 
+        QgsProject.instance().readProject.connect(self._on_project_changed)
+        QgsProject.instance().cleared.connect(self._on_project_changed)
+
     def unload(self):
+        QgsProject.instance().readProject.disconnect(self._on_project_changed)
+        QgsProject.instance().cleared.disconnect(self._on_project_changed)
         if self._comment_save_timer is not None:
             self._comment_save_timer.stop()
         if self._translator:
@@ -143,95 +240,20 @@ class CheckAKea(DockMixin):
     # ------------------------------------------------------------------ config actions
 
     def open_config_dialog(self):
-        dialog = JsonConfigDialog(self.config, self.iface.mainWindow())
+        dialog = ConfigDialog(self.config, parent=self.iface.mainWindow())
         if dialog.exec_() != QDialog.Accepted:
             return
         self.config = dialog.config
         self.save_config()
-        self.reload_config()
-        if self.status_label:
-            self.status_label.setText(tr("Config saved and reloaded."))
+        self.register_shortcuts()
+        self.start_validation()
 
-    def reload_config(self):
+    def _on_project_changed(self, *_):
+        self.clear_active_queue()
         self.config = self.load_config()
         self.register_shortcuts()
-        self.refresh_field_checklist()
-        if self.session:
-            self.session.waiting_to_advance = False
         if self.status_label:
-            delay_ms = self.config.get(KEY_AUTO_ADVANCE_DELAY, 100)
-            self.status_label.setText(
-                tr("Config reloaded.")
-                + "<br>"
-                + tr("Auto-advance delay: {} ms").format(delay_ms)
-            )
-
-    # ------------------------------------------------------------------ layer combo
-
-    def refresh_layer_combo(self):
-        if self.layer_combo is None:
-            return
-        current_layer_id = self.layer_combo.currentData()
-        self.layer_combo.blockSignals(True)
-        self.layer_combo.clear()
-        populate_layer_combo(self.layer_combo, QgsProject.instance().layerTreeRoot())
-        restored = False
-        if current_layer_id:
-            index = self.layer_combo.findData(current_layer_id)
-            if index >= 0:
-                self.layer_combo.setCurrentIndex(index)
-                restored = True
-        self.layer_combo.blockSignals(False)
-        if current_layer_id and not restored:
-            self.clear_active_queue()
-            self.refresh_field_checklist()
-            if self.status_label:
-                self.status_label.setText(
-                    tr(
-                        "Active layer was removed. Choose a layer, then start the queue."
-                    )
-                )
-
-    def layer_selection_changed(self):
-        self.clear_active_queue()
-        self.refresh_field_checklist()
-        if self.status_label:
-            self.status_label.setText(
-                tr("Layer changed. Click Start / refresh queue to begin.")
-            )
-
-    # ------------------------------------------------------------------ field checklist
-
-    def refresh_field_checklist(self):
-        if self.field_checklist is None:
-            return
-        layer_id = self.layer_combo.currentData() if self.layer_combo else None
-        layer = QgsProject.instance().mapLayer(layer_id)
-        try:
-            self.field_checklist.model().itemChanged.disconnect(
-                self._on_checklist_changed
-            )
-        except TypeError:
-            pass
-        self.field_checklist.clear()
-        if layer:
-            layer_field_names = {f.name() for f in layer.fields()}
-            self.checked_fields &= layer_field_names
-            for field in layer.fields():
-                self.field_checklist.add_check_item(
-                    field.name(), checked=field.name() in self.checked_fields
-                )
-        self.field_checklist.model().itemChanged.connect(self._on_checklist_changed)
-        self.field_checklist.update_display()
-        self.refresh_attribute_table()
-
-    def _on_checklist_changed(self, item):
-        if item.checkState() == Qt.Checked:
-            self.checked_fields.add(item.text())
-        else:
-            self.checked_fields.discard(item.text())
-        self.field_checklist.update_display()
-        self.refresh_attribute_table()
+            self.status_label.setText(tr("Project changed. Open Setup to begin."))
 
     # ------------------------------------------------------------------ attribute table
 
@@ -245,23 +267,65 @@ class CheckAKea(DockMixin):
             feature = self.session.current_feature()
             if feature is None:
                 return
+        display_fields = set(
+            self.config.get(KEY_DISPLAY_FIELDS, DEFAULT_DISPLAY_FIELDS)
+        )
         fields_to_show = [
-            f for f in self.session.layer.fields() if f.name() in self.checked_fields
+            f for f in self.session.layer.fields() if f.name() in display_fields
         ]
+        self.attribute_table.setVisible(bool(fields_to_show))
+        if not fields_to_show:
+            return
+        mono = QFontDatabase.systemFont(QFontDatabase.FixedFont)
+        flash_color = QColor("#fff9c4")
+
+        self._flash_generation += 1
+        gen = self._flash_generation
+        changed_rows = []
+
         self.attribute_table.setRowCount(len(fields_to_show))
+        new_values = {}
         for row, field in enumerate(fields_to_show):
             value = feature[field.name()]
             value_str = "" if (value is None or value == QGIS_NULL) else str(value)
-            self.attribute_table.setItem(row, 0, QTableWidgetItem(field.name()))
-            self.attribute_table.setItem(row, 1, QTableWidgetItem(value_str))
+            new_values[field.name()] = value_str
+
+            name_item = QTableWidgetItem(field.name())
+            value_item = QTableWidgetItem(value_str)
+            value_item.setFont(mono)
+
+            if (
+                field.name() in self._last_feature_values
+                and value_str != self._last_feature_values[field.name()]
+            ):
+                name_item.setBackground(flash_color)
+                value_item.setBackground(flash_color)
+                changed_rows.append(row)
+
+            self.attribute_table.setItem(row, 0, name_item)
+            self.attribute_table.setItem(row, 1, value_item)
+
+        self._last_feature_values = new_values
         self.attribute_table.resizeRowsToContents()
+
+        if changed_rows and self.config.get(KEY_FLASH_CHANGES, DEFAULT_FLASH_CHANGES):
+            delay = self.config.get(KEY_FLASH_CHANGES_DELAY, DEFAULT_FLASH_CHANGES_DELAY)
+            def clear_flash(g=gen):
+                if self._flash_generation != g:
+                    return
+                for r in changed_rows:
+                    for col in range(2):
+                        item = self.attribute_table.item(r, col)
+                        if item:
+                            item.setBackground(QBrush())
+            QTimer.singleShot(delay, clear_flash)
 
     # ------------------------------------------------------------------ shortcuts
 
     def register_shortcuts(self):
         self.clear_shortcuts()
         all_shortcuts = [
-            (QKeySequence(key), lambda k=key: self.apply_validation(k))
+            (QKeySequence(_normalise_key(key)), lambda k=key: self.apply_validation(k))
             for key in self.config[KEY_SHORTCUTS]
         ] + [
             (QKeySequence(Qt.Key_Left), self.previous_feature),
@@ -308,28 +372,32 @@ class CheckAKea(DockMixin):
     def clear_active_queue(self):
         self._disconnect_selection_signal()
         self.session = None
+        self._last_feature_values = {}
+        self._flash_generation += 1
         self.clear_highlight()
         self.clear_comment_box()
         self.set_validation_controls_visible(False)
 
     def start_validation(self):
-        layer_id = self.layer_combo.currentData()
-        layer = QgsProject.instance().mapLayer(layer_id)
+        layer_id = self.config.get(KEY_LAYER_ID, "")
+        layer = QgsProject.instance().mapLayer(layer_id) if layer_id else None
 
         if not layer:
-            self.status_label.setText(tr("No valid layer selected."))
+            if self.status_label:
+                self.status_label.setText(
+                    tr("No layer configured. Open Setup to begin.")
+                )
             self.set_validation_controls_visible(False)
             return
 
         validation_field = self.config[KEY_VALIDATION_FIELD]
         if validation_field not in [f.name() for f in layer.fields()]:
-            self.status_label.setText(
-                tr("Field '{}' does not exist in this layer.").format(
-                    escape(validation_field)
+            if self.status_label:
+                self.status_label.setText(
+                    tr(
+                        "Field '{}' not found in layer. Open Setup to reconfigure."
+                    ).format(escape(validation_field))
                 )
-                + "<br>"
-                + tr("Add it as a Text/String field first.")
-            )
             self.set_validation_controls_visible(False)
             return
 
@@ -338,7 +406,8 @@ class CheckAKea(DockMixin):
 
         feature_ids = get_feature_ids(layer, self.config)
         if not feature_ids:
-            self.status_label.setText(tr("No features found for validation."))
+            if self.status_label:
+                self.status_label.setText(tr("No features found for validation."))
             self.clear_highlight()
             self.clear_comment_box()
             self.set_validation_controls_visible(False)
@@ -346,8 +415,8 @@ class CheckAKea(DockMixin):
 
         self.session = ValidationSession(layer, feature_ids)
         self._connect_selection_signal()
-        self.refresh_field_checklist()
         self.set_validation_controls_visible(True)
+        self._update_comment_visibility()
         self.show_current_feature()
 
     def refresh_histogram(self):
@@ -375,27 +444,38 @@ class CheckAKea(DockMixin):
         self.zoom_to_feature(feature)
         self.highlight_feature(feature)
         self.load_comment_for_feature(feature)
-        if self.auto_identify:
+        if self.config.get(KEY_AUTO_IDENTIFY, DEFAULT_AUTO_IDENTIFY):
             self._auto_identify_feature(feature)
         self.refresh_attribute_table(feature)
 
         validation_field = self.config[KEY_VALIDATION_FIELD]
         current_value = feature[validation_field]
-        active_value = (
-            None
-            if (current_value is None or current_value == QGIS_NULL)
-            else str(current_value)
-        )
+        field_is_null = current_value is None or current_value == QGIS_NULL
+        active_value = None if field_is_null else str(current_value)
+
+        attr_fids = self._get_ordered_fids_from_attr_table()
+        if attr_fids is not None:
+            session_set = set(self.session.feature_ids)
+            ordered = [f for f in attr_fids if f in session_set]
+            try:
+                display_pos = ordered.index(fid) + 1
+                display_total = len(ordered)
+            except ValueError:
+                display_pos = self.session.index + 1
+                display_total = len(self.session)
+        else:
+            display_pos = self.session.index + 1
+            display_total = len(self.session)
 
         self.footer_label.setText(
             f'<table width="100%"><tr>'
-            f'<td>{tr("Feature {} of {}").format(self.session.index + 1, len(self.session))}</td>'
+            f'<td>{tr("Feature {} of {}").format(display_pos, display_total)}</td>'
             f'<td align="right">FID: {fid}</td>'
             f"</tr></table>"
         )
         self.status_label.setText(
-            f"<h4 style='margin: 4px 0;'>{tr('Validation shortcuts')}</h4>"
-            f"{kbd_table(list(self.config[KEY_SHORTCUTS].items()), active_value=active_value)}"
+            f"<h4 style='margin: 4px 0;'>{tr('Keyboard shortcuts')}</h4>"
+            f"{kbd_table(list(self.config[KEY_SHORTCUTS].items()), active_value=active_value, null_active=field_is_null)}"
         )
 
     def _scroll_attribute_table_to_selection(self):
@@ -422,14 +502,14 @@ class CheckAKea(DockMixin):
             except Exception:
                 pass
 
-    # ------------------------------------------------------------------ identify
+    # ------------------------------------------------------------------ identify / comment visibility
 
-    def _on_auto_identify_toggled(self, checked):
-        self.auto_identify = checked
-        if checked and self.session:
-            feature = self.session.current_feature()
-            if feature:
-                self._auto_identify_feature(feature)
+    def _update_comment_visibility(self):
+        if self.comment_section_widget is None:
+            return
+        self.comment_section_widget.setVisible(
+            bool(self.config.get(KEY_COMMENT_FIELD, ""))
+        )
 
     def _auto_identify_feature(self, feature):
         if not self.session or feature is None:
@@ -578,10 +658,58 @@ class CheckAKea(DockMixin):
             self.session.waiting_to_advance = False
         self.next_feature()
 
+    def _get_ordered_fids_from_attr_table(self):
+        """Return FIDs in the order currently shown in the open attribute table, or None."""
+        if not self.session:
+            return None
+        for widget in QApplication.instance().allWidgets():
+            if not hasattr(widget, "model") or not hasattr(widget, "scrollTo"):
+                continue
+            try:
+                raw = widget.model()
+                if raw is None:
+                    continue
+                if raw.metaObject().className() != "QgsAttributeTableFilterModel":
+                    continue
+                model = sip.wrapinstance(
+                    sip.unwrapinstance(raw), QgsAttributeTableFilterModel
+                )
+                if model.layer().id() != self.session.layer.id():
+                    continue
+                master = sip.wrapinstance(
+                    sip.unwrapinstance(model.masterModel()), QgsAttributeTableModel
+                )
+                return [
+                    master.rowToId(model.mapToSource(model.index(row, 0)).row())
+                    for row in range(model.rowCount())
+                ]
+            except Exception:
+                pass
+        return None
+
     def _navigate(self, delta):
         if not self.session or self.session.waiting_to_advance:
             return
         self.save_comment_for_current_feature()
+
+        attr_fids = self._get_ordered_fids_from_attr_table()
+        if attr_fids is not None:
+            session_set = set(self.session.feature_ids)
+            ordered = [f for f in attr_fids if f in session_set]
+            try:
+                pos = ordered.index(self.session.current_fid)
+            except ValueError:
+                pass
+            else:
+                new_pos = pos + delta
+                if 0 <= new_pos < len(ordered):
+                    self.session.index = self.session.index_of(ordered[new_pos])
+                    self.show_current_feature()
+                elif delta > 0:
+                    self.clear_active_queue()
+                    self.status_label.setText(tr("Finished validation queue."))
+                return
+
         if self.session.navigate(delta):
             self.show_current_feature()
         elif delta > 0:

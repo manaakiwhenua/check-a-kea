@@ -18,7 +18,7 @@ from qgis.PyQt.QtCore import Qt, QTimer
 
 from .histogram import HistogramWidget
 from .utils import tr
-from .widgets import CheckableComboBox, CommentFocusGuard, LayerComboBox
+from .widgets import CommentFocusGuard
 
 
 class DockMixin:
@@ -35,7 +35,7 @@ class DockMixin:
         validate_layout = QVBoxLayout(validate_widget)
         self._build_top_section(validate_layout)
         self.validation_controls_widget = self._build_validation_controls()
-        self.status_label = QLabel(tr("Choose a layer, then start the queue."))
+        self.status_label = QLabel(tr("Open Setup to configure and begin."))
         self.status_label.setWordWrap(True)
         self.status_label.setTextFormat(Qt.RichText)
         self.footer_label = QLabel("")
@@ -63,33 +63,13 @@ class DockMixin:
         self._focus_guard = CommentFocusGuard(self.comment_box, self.canvas)
         QApplication.instance().installEventFilter(self._focus_guard)
 
-        self.refresh_layer_combo()
         self.set_validation_controls_visible(False)
         self.register_shortcuts()
 
     def _build_top_section(self, layout):
-        self.layer_combo = LayerComboBox(self.refresh_layer_combo)
-        self.layer_combo.currentIndexChanged.connect(
-            lambda _: self.layer_selection_changed()
-        )
-
-        start_button = QPushButton(tr("Start / refresh queue"))
-        start_button.clicked.connect(self.start_validation)
-
-        config_button = QPushButton(tr("Edit config / shortcuts"))
-        config_button.clicked.connect(self.open_config_dialog)
-
-        reload_button = QPushButton(tr("Reload config"))
-        reload_button.clicked.connect(self.reload_config)
-
-        config_layout = QHBoxLayout()
-        config_layout.addWidget(config_button)
-        config_layout.addWidget(reload_button)
-
-        layout.addWidget(QLabel(tr("Target layer")))
-        layout.addWidget(self.layer_combo)
-        layout.addWidget(start_button)
-        layout.addLayout(config_layout)
+        setup_button = QPushButton(tr("Settings / preferences"))
+        setup_button.clicked.connect(self.open_config_dialog)
+        layout.addWidget(setup_button)
 
     def _build_attribute_table(self):
         self.attribute_table = QTableWidget(0, 2)
@@ -135,15 +115,6 @@ class DockMixin:
         next_button.clicked.connect(self.next_feature)
         next_button.setToolTip(tr("Go to next feature, Right Arrow"))
 
-        self.auto_identify_button = QPushButton(tr("Auto-identify"))
-        self.auto_identify_button.setCheckable(True)
-        self.auto_identify_button.setToolTip(
-            tr(
-                "When enabled, opens QGIS Identify Results for the current feature as you navigate."
-            )
-        )
-        self.auto_identify_button.toggled.connect(self._on_auto_identify_toggled)
-
         layout = QHBoxLayout()
         layout.addWidget(prev_button)
         layout.addWidget(next_button)
@@ -154,18 +125,14 @@ class DockMixin:
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        self.field_checklist = CheckableComboBox()
-        self.field_checklist.model().itemChanged.connect(self._on_checklist_changed)
+        self.comment_section_widget = self._build_comment_section()
 
         splitter = QSplitter(Qt.Vertical)
         splitter.addWidget(self._build_attribute_table())
-        splitter.addWidget(self._build_comment_section())
+        splitter.addWidget(self.comment_section_widget)
         splitter.setSizes([80, 80])
 
-        layout.addWidget(QLabel(tr("Display attributes")))
-        layout.addWidget(self.field_checklist)
         layout.addWidget(splitter)
         layout.addLayout(self._build_nav_section())
-        layout.addWidget(self.auto_identify_button)
 
         return widget
