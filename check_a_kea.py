@@ -812,13 +812,12 @@ class CheckAKea(DockMixin):
             return
 
         self.save_comment_for_current_feature()
+        self.show_current_feature()
 
         if self.config.get(KEY_AUTO_ADVANCE, True):
             delay_ms = self.config.get(KEY_AUTO_ADVANCE_DELAY, 100)
             self.session.waiting_to_advance = True
             QTimer.singleShot(delay_ms, self.advance_after_delay)
-        else:
-            self.show_current_feature()
 
     def advance_after_delay(self):
         if self.session:
